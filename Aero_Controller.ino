@@ -2,24 +2,26 @@
 #define HALF_STEP
 #include <Rotary.h>
 #include <Cycle_Timer.h>
+#include <util/atomic.h>
 #include <LiquidCrystal_I2C.h>          // http://members.iinet.net.au/~vanluynm/Down/LiquidCrystal_I2C.zip
 
 /*-----( Definitions )-----*/
 #define TOTAL_CIRCUITS 2 // <-- CHANGE THIS | set how many I2C circuits are attached to the Tentacle
 
 /*-----( Declare Constants )-----*/
-const int32_t initialTimerOn 		= 5;
-const int32_t initialTimerOff 		= 10;
+const int32_t initialTimerOn				= 5;
+const int32_t initialTimerOff				= 10;
 
-const uint8_t floatPin                  = 2;
-const uint8_t mainsWaterPin             = 8;
-const uint8_t NozzlesPin 		= 9;
+const uint8_t floatPin					= 2;
+const uint8_t mainsWaterPin				= 8;
+const uint8_t NozzlesPin				= 9;
 
-const unsigned long READ_ENCODERS_EVERY 	= 0;
-const unsigned long READ_SENSORS_EVERY 		= 800;
-const unsigned long UPDATE_NOZZLES_EVERY = 20;
-const unsigned long WRITE_SERIAL_MONITOR_EVERY 	= 1000;
-const unsigned long WRITE_DISPLAY_EVERY 	= 250;
+const unsigned long READ_ENCODERS_EVERY			= 0;
+const unsigned long READ_SENSORS_EVERY			= 800;
+const unsigned long UPDATE_NOZZLES_EVERY		= 20;
+const unsigned long WRITE_SERIAL_MONITOR_EVERY		= 1000;
+const unsigned long WRITE_DISPLAY_EVERY			= 250;
+const unsigned long TURN_OFF_LCD_BACKLIGHT_AFTER	= 15000;
 
 /*-----( Declare Objects )-----*/
 Rotary onTimeEncoder(6, 5);
@@ -48,20 +50,24 @@ long positionOffEncoder = initialTimerOff;
 int floatLevel = HIGH;
 
 char lcd_buffer[20];             // LCD buffer used for the better string format to LCD
+bool lcdBacklightIsOn = false;
 
 unsigned long lastSensorRead;
 unsigned long lastEncoderRead;
 unsigned long lastNozzlesUpdate;
 unsigned long lastSerialMonitorWrite;
 unsigned long lastDisplayWrite;
+unsigned long lastBacklightEvent;
 
 void setup() {
 
   Wire.begin();
-  initSerial();
+  Serial.begin(115200);
+
   initEncoders();
   initFloat();
   initNozzles();
+  initSerial();
   initDisplay();
 
   // initialise most recent update events
@@ -71,6 +77,7 @@ void setup() {
   lastNozzlesUpdate = now;
   lastSerialMonitorWrite = now;
   lastDisplayWrite = now;
+  lastBacklightEvent = now;
 
 }
 
@@ -92,6 +99,7 @@ void loop() {
   doFunctionAtInterval(updateNozzles, &lastNozzlesUpdate, UPDATE_NOZZLES_EVERY);
   doFunctionAtInterval(writeDisplay, &lastDisplayWrite, WRITE_DISPLAY_EVERY);
   doFunctionAtInterval(writeSerial, &lastSerialMonitorWrite, WRITE_SERIAL_MONITOR_EVERY);
+  doFunctionAtInterval(turnOffBacklight, &lastBacklightEvent, TURN_OFF_LCD_BACKLIGHT_AFTER);
 
 }
 
@@ -172,8 +180,15 @@ void initEncoders() {
 
 void readEncoders() {
 
-  unsigned char  result = onTimeEncoder.process();
+  unsigned char result;
+
+  result = onTimeEncoder.process();
+  if (result && !lcdBacklightIsOn) {
+  	turnOnBacklight();
+  	return;
+  }
   if (result) {
+    turnOnBacklight();
     switch (result) {
       case DIR_CW:
         positionOnEncoder++;
@@ -183,10 +198,14 @@ void readEncoders() {
         break;
     }
     Serial.print("On: "); Serial.println(positionOnEncoder);
-  }
-
+  } 
   result = offTimeEncoder.process();
+  if (result && !lcdBacklightIsOn) {
+  	turnOnBacklight();
+  	return;
+  }
   if (result) {
+    turnOnBacklight();
     switch (result) {
       case DIR_CW:
         positionOffEncoder++;
@@ -210,22 +229,23 @@ void initFloat() {
 }
 
 void initNozzles() {
-  
+
   pinMode(NozzlesPin, OUTPUT);
   Nozzles.setPin(NozzlesPin);
   updateNozzles();
-  
+
 }
 
 void updateNozzles() {
-	  Nozzles.setOnTime(positionOnEncoder);
+
+  Nozzles.setOnTime(positionOnEncoder);
   Nozzles.setOffTime(positionOffEncoder);
   Nozzles.update();
-  
+
 }
+
 void initSerial() {
 
-  Serial.begin(9600);
   Serial.println("Aero Controller");
   serialDivider();
 
@@ -233,15 +253,25 @@ void initSerial() {
 
 void writeSerial() {
 
+  int localFloatLevel;
+  long localPositionOnEncoder;
+  long localPositionOffEncoder;
+
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    localFloatLevel = floatLevel;
+    localPositionOnEncoder = positionOnEncoder;
+    localPositionOffEncoder = positionOffEncoder;
+  }
+
   for (int i = 0; i < TOTAL_CIRCUITS; i++) { // loop through all the sensors
     Serial.print(channelNames[i]);                // print channel name
     Serial.print(":\t");
     Serial.println(readings[i]);             // print the actual reading
   }
-  Serial.print("On:"); Serial.print(positionOnEncoder); Serial.print("s ");
-  Serial.print("Off:"); Serial.print(positionOffEncoder); Serial.println("s");
+  Serial.print("On:"); Serial.print(localPositionOnEncoder); Serial.print("s ");
+  Serial.print("Off:"); Serial.print(localPositionOffEncoder); Serial.println("s");
 
-  Serial.print("Resevoir: "); Serial.println((floatLevel) ? "Full" : "Filling");
+  Serial.print("Resevoir: "); Serial.println((localFloatLevel) ? "Full" : "Filling");
   serialDivider();
 
 }
@@ -255,7 +285,7 @@ void serialDivider() {
 void initDisplay() {
 
   lcd.init();
-  lcd.backlight();
+  turnOnBacklight();
   lcd.setCursor(2, 0);
   lcd.print("Aero Controller");
   delay(1000);
@@ -265,19 +295,44 @@ void initDisplay() {
 
 void writeDisplay() {
 
+  int localFloatLevel;
+  long localPositionOnEncoder;
+  long localPositionOffEncoder;
+
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    localFloatLevel = floatLevel;
+    localPositionOnEncoder = positionOnEncoder;
+    localPositionOffEncoder = positionOffEncoder;
+  }
+
   lcd.setCursor(0, 2);
   lcd.print("Resevoir:");
-  lcd.println((floatLevel) ? "       Full" : "    Filling");
+  lcd.println((localFloatLevel) ? "       Full" : "    Filling");
   lcd.setCursor(0, 1);
   lcd.print(" pH:"); lcd.print(readings[0]);
   lcd.setCursor(10, 1);
   lcd.print(" EC:"); lcd.print(readings[1]);
   lcd.setCursor(2, 3);
-  dtostrf((double) positionOnEncoder, 3, 0, lcd_buffer);
+  dtostrf((double) localPositionOnEncoder, 3, 0, lcd_buffer);
   lcd.print("On:"); lcd.print(lcd_buffer); lcd.print("s");
   lcd.setCursor(10, 3);
-  dtostrf((double) positionOffEncoder, 3, 0, lcd_buffer);
+  dtostrf((double) localPositionOffEncoder, 3, 0, lcd_buffer);
   lcd.print("Off:"); lcd.print(lcd_buffer); lcd.print("s");
+
+}
+
+void turnOnBacklight() {
+
+  lcd.backlight();
+  lastBacklightEvent = millis();
+  lcdBacklightIsOn = true;
+
+}
+
+void turnOffBacklight() {
+
+  lcd.noBacklight();
+  lcdBacklightIsOn = false;
 
 }
 
@@ -285,5 +340,6 @@ void floatPinISR() {
 
   floatLevel = digitalRead(floatPin);
   digitalWrite(mainsWaterPin, !floatLevel);
+  //turnOnBacklight();
 
 }

@@ -21,7 +21,6 @@ const unsigned long READ_SENSORS_EVERY			= 800;
 const unsigned long UPDATE_NOZZLES_EVERY		= 20;
 const unsigned long WRITE_SERIAL_MONITOR_EVERY		= 1000;
 const unsigned long WRITE_DISPLAY_EVERY			= 250;
-const unsigned long TURN_OFF_LCD_BACKLIGHT_AFTER	= 15000;
 
 /*-----( Declare Objects )-----*/
 Rotary onTimeEncoder(6, 5);
@@ -50,14 +49,12 @@ long positionOffEncoder = initialTimerOff;
 int floatLevel = HIGH;
 
 char lcd_buffer[20];             // LCD buffer used for the better string format to LCD
-bool lcdBacklightIsOn = false;
 
 unsigned long lastSensorRead;
 unsigned long lastEncoderRead;
 unsigned long lastNozzlesUpdate;
 unsigned long lastSerialMonitorWrite;
 unsigned long lastDisplayWrite;
-unsigned long lastBacklightEvent;
 
 void setup() {
 
@@ -77,7 +74,6 @@ void setup() {
   lastNozzlesUpdate = now;
   lastSerialMonitorWrite = now;
   lastDisplayWrite = now;
-  lastBacklightEvent = now;
 
 }
 
@@ -99,7 +95,6 @@ void loop() {
   doFunctionAtInterval(updateNozzles, &lastNozzlesUpdate, UPDATE_NOZZLES_EVERY);
   doFunctionAtInterval(writeDisplay, &lastDisplayWrite, WRITE_DISPLAY_EVERY);
   doFunctionAtInterval(writeSerial, &lastSerialMonitorWrite, WRITE_SERIAL_MONITOR_EVERY);
-  doFunctionAtInterval(turnOffBacklight, &lastBacklightEvent, TURN_OFF_LCD_BACKLIGHT_AFTER);
 
 }
 
@@ -183,12 +178,7 @@ void readEncoders() {
   unsigned char result;
 
   result = onTimeEncoder.process();
-  if (result && !lcdBacklightIsOn) {
-  	turnOnBacklight();
-  	return;
-  }
   if (result) {
-    turnOnBacklight();
     switch (result) {
       case DIR_CW:
         positionOnEncoder++;
@@ -200,12 +190,7 @@ void readEncoders() {
     Serial.print("On: "); Serial.println(positionOnEncoder);
   } 
   result = offTimeEncoder.process();
-  if (result && !lcdBacklightIsOn) {
-  	turnOnBacklight();
-  	return;
-  }
   if (result) {
-    turnOnBacklight();
     switch (result) {
       case DIR_CW:
         positionOffEncoder++;
@@ -285,7 +270,7 @@ void serialDivider() {
 void initDisplay() {
 
   lcd.init();
-  turnOnBacklight();
+  lcd.backlight();
   lcd.setCursor(2, 0);
   lcd.print("Aero Controller");
   delay(1000);
@@ -318,21 +303,6 @@ void writeDisplay() {
   lcd.setCursor(10, 3);
   dtostrf((double) localPositionOffEncoder, 3, 0, lcd_buffer);
   lcd.print("Off:"); lcd.print(lcd_buffer); lcd.print("s");
-
-}
-
-void turnOnBacklight() {
-
-  lcd.backlight();
-  lastBacklightEvent = millis();
-  lcdBacklightIsOn = true;
-
-}
-
-void turnOffBacklight() {
-
-  lcd.noBacklight();
-  lcdBacklightIsOn = false;
 
 }
 

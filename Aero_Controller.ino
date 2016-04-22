@@ -4,6 +4,7 @@
 #include <Cycle_Timer.h>
 #include <util/atomic.h>
 #include <LiquidCrystal_I2C.h>          // http://members.iinet.net.au/~vanluynm/Down/LiquidCrystal_I2C.zip
+#include <ApplicationMonitor.h>
 
 /*-----( Definitions )-----*/
 #define TOTAL_CIRCUITS 2 // <-- CHANGE THIS | set how many I2C circuits are attached to the Tentacle
@@ -29,6 +30,8 @@ Rotary offTimeEncoder(4, 3);
 CycleTimer Nozzles;
 
 LiquidCrystal_I2C lcd(0x3F, 20, 4); // set the LCD address to 0x27 for a 20 chars and 4 line display
+
+Watchdog::CApplicationMonitor ApplicationMonitor;
 
 /*-----( Declare Variables )-----*/
 boolean requestPending = false; // wether or not we're waiting for a reading
@@ -56,10 +59,15 @@ unsigned long lastNozzlesUpdate;
 unsigned long lastSerialMonitorWrite;
 unsigned long lastDisplayWrite;
 
+int lastFunctionCalled = 0;
+
 void setup() {
 
   Wire.begin();
   Serial.begin(115200);
+
+  ApplicationMonitor.Dump(Serial);
+  ApplicationMonitor.EnableWatchdog(Watchdog::CApplicationMonitor::Timeout_4s);
 
   initEncoders();
   initFloat();
@@ -89,7 +97,9 @@ void doFunctionAtInterval(void (*callBackFunction)(), unsigned long *lastEvent, 
 }
 
 void loop() {
-
+	
+  ApplicationMonitor.IAmAlive();
+ApplicationMonitor.SetData(0);
   doFunctionAtInterval(readSensors, &lastSensorRead, READ_SENSORS_EVERY);
   readEncoders();
   doFunctionAtInterval(updateNozzles, &lastNozzlesUpdate, UPDATE_NOZZLES_EVERY);
@@ -105,7 +115,7 @@ void initSensors() {
 }
 
 void readSensors() {
-
+ApplicationMonitor.SetData(1);
   if (requestPending) {                          // is a request pending?
     receiveReading();                // do the actual I2C communication
   } else {                                        // no request is pending,
@@ -117,7 +127,7 @@ void readSensors() {
 
 // Request a reading from the current channel
 void requestReading() {
-
+ApplicationMonitor.SetData(2);
   requestPending = true;
   Wire.beginTransmission(channel_ids[channel]); // call the circuit by its ID number.
   Wire.write('r');        		        // request a reading by sending 'r'
@@ -127,7 +137,7 @@ void requestReading() {
 
 // Receive data from the I2C bus
 void receiveReading() {
-
+ApplicationMonitor.SetData(3);
   sensorBytesReceived = 0;                        // reset data counter
   memset(sensordata, 0, sizeof(sensordata));        // clear sensordata array;
 
@@ -174,7 +184,7 @@ void initEncoders() {
 }
 
 void readEncoders() {
-
+ApplicationMonitor.SetData(4);
   unsigned char result;
 
   result = onTimeEncoder.process();
@@ -188,7 +198,7 @@ void readEncoders() {
         break;
     }
     Serial.print("On: "); Serial.println(positionOnEncoder);
-  } 
+  }
   result = offTimeEncoder.process();
   if (result) {
     switch (result) {
@@ -222,9 +232,17 @@ void initNozzles() {
 }
 
 void updateNozzles() {
-
-  Nozzles.setOnTime(positionOnEncoder);
-  Nozzles.setOffTime(positionOffEncoder);
+ApplicationMonitor.SetData(5);
+  long localPositionOnEncoder;
+  long localPositionOffEncoder;
+  
+  ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    localPositionOnEncoder = positionOnEncoder;
+    localPositionOffEncoder = positionOffEncoder;
+  }
+  
+  Nozzles.setOnTime(localPositionOnEncoder);
+  Nozzles.setOffTime(localPositionOffEncoder);
   Nozzles.update();
 
 }
@@ -237,7 +255,7 @@ void initSerial() {
 }
 
 void writeSerial() {
-
+ApplicationMonitor.SetData(6);
   int localFloatLevel;
   long localPositionOnEncoder;
   long localPositionOffEncoder;
@@ -279,7 +297,7 @@ void initDisplay() {
 }
 
 void writeDisplay() {
-
+ApplicationMonitor.SetData(7);
   int localFloatLevel;
   long localPositionOnEncoder;
   long localPositionOffEncoder;

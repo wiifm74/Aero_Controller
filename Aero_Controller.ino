@@ -46,10 +46,10 @@ char *channelNames[] = { "PH", "EC" }; // <-- CHANGE THIS. A list of channel nam
 String readings[TOTAL_CIRCUITS]; // an array of strings to hold the readings of each channel
 int channel = 0; // INT pointer to hold the current position in the channel_ids/channelNames array
 
-long positionOnEncoder = initialTimerOn;
-long positionOffEncoder = initialTimerOff;
+volatile long positionOnEncoder = initialTimerOn;
+volatile long positionOffEncoder = initialTimerOff;
 
-int floatLevel = HIGH;
+volatile int floatLevel = HIGH;
 
 char lcd_buffer[20];             // LCD buffer used for the better string format to LCD
 

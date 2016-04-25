@@ -3,6 +3,7 @@
 #include <Rotary.h>
 #include <Cycle_Timer.h>
 #include <util/atomic.h>
+#include <EEPROMex.h>
 #include <LiquidCrystal_I2C.h>          // http://members.iinet.net.au/~vanluynm/Down/LiquidCrystal_I2C.zip
 #include <ApplicationMonitor.h>
 
@@ -15,7 +16,10 @@ const int32_t initialTimerOff				= 10;
 
 const uint8_t floatPin					= 2;
 const uint8_t mainsWaterPin				= 8;
-const uint8_t NozzlesPin				= 9;
+const uint8_t nozzlesPin				= 9;
+
+const int CONFIG_VERSION = 1;
+const int memoryBase = 32;
 
 const unsigned long READ_ENCODERS_EVERY			= 0;
 const unsigned long READ_SENSORS_EVERY			= 800;
@@ -27,9 +31,19 @@ const unsigned long WRITE_DISPLAY_EVERY			= 250;
 Rotary onTimeEncoder(6, 5);
 Rotary offTimeEncoder(4, 3);
 
-CycleTimer Nozzles;
+CycleTimer nozzles;
 
 LiquidCrystal_I2C lcd(0x3F, 20, 4); // set the LCD address to 0x27 for a 20 chars and 4 line display
+
+struct Settings {
+  int32_t timerOn;
+  int32_t timerOff;
+  int version;
+} settings = {
+  initialTimerOn,
+  initialTimerOff,
+  CONFIG_VERSION
+};
 
 Watchdog::CApplicationMonitor ApplicationMonitor;
 
@@ -46,12 +60,14 @@ char *channelNames[] = { "PH", "EC" }; // <-- CHANGE THIS. A list of channel nam
 String readings[TOTAL_CIRCUITS]; // an array of strings to hold the readings of each channel
 int channel = 0; // INT pointer to hold the current position in the channel_ids/channelNames array
 
-long positionOnEncoder = initialTimerOn;
-long positionOffEncoder = initialTimerOff;
+volatile long positionOnEncoder;
+volatile long positionOffEncoder;
 
-int floatLevel = HIGH;
+volatile int floatLevel = HIGH;
 
 char lcd_buffer[20];             // LCD buffer used for the better string format to LCD
+
+int configAddress = 0;
 
 unsigned long lastSensorRead;
 unsigned long lastEncoderRead;
@@ -66,9 +82,10 @@ void setup() {
   Wire.begin();
   Serial.begin(115200);
 
-  ApplicationMonitor.Dump(Serial);
   ApplicationMonitor.EnableWatchdog(Watchdog::CApplicationMonitor::Timeout_4s);
 
+  initSettings();
+  initSensors();
   initEncoders();
   initFloat();
   initNozzles();
@@ -97,14 +114,38 @@ void doFunctionAtInterval(void (*callBackFunction)(), unsigned long *lastEvent, 
 }
 
 void loop() {
-	
+
   ApplicationMonitor.IAmAlive();
-ApplicationMonitor.SetData(0);
   doFunctionAtInterval(readSensors, &lastSensorRead, READ_SENSORS_EVERY);
   readEncoders();
   doFunctionAtInterval(updateNozzles, &lastNozzlesUpdate, UPDATE_NOZZLES_EVERY);
   doFunctionAtInterval(writeDisplay, &lastDisplayWrite, WRITE_DISPLAY_EVERY);
   doFunctionAtInterval(writeSerial, &lastSerialMonitorWrite, WRITE_SERIAL_MONITOR_EVERY);
+
+}
+
+void initSettings() {
+
+  EEPROM.setMemPool(memoryBase, EEPROMSizeUno);
+  configAddress = EEPROM.getAddress(sizeof(Settings));
+  EEPROM.readBlock(configAddress, settings);
+
+  if (settings.version != CONFIG_VERSION) {
+    settings.timerOn = initialTimerOn;
+    settings.timerOff = initialTimerOff;
+    settings.version = CONFIG_VERSION;
+    EEPROM.writeBlock(configAddress, settings);
+  }
+
+}
+
+void updateSettings() {
+  
+   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+    settings.timerOn = positionOnEncoder;
+    settings.timerOff = positionOffEncoder;
+  }
+  EEPROM.updateBlock(configAddress, settings);
 
 }
 
@@ -115,7 +156,7 @@ void initSensors() {
 }
 
 void readSensors() {
-ApplicationMonitor.SetData(1);
+
   if (requestPending) {                          // is a request pending?
     receiveReading();                // do the actual I2C communication
   } else {                                        // no request is pending,
@@ -127,7 +168,7 @@ ApplicationMonitor.SetData(1);
 
 // Request a reading from the current channel
 void requestReading() {
-ApplicationMonitor.SetData(2);
+
   requestPending = true;
   Wire.beginTransmission(channel_ids[channel]); // call the circuit by its ID number.
   Wire.write('r');        		        // request a reading by sending 'r'
@@ -137,7 +178,7 @@ ApplicationMonitor.SetData(2);
 
 // Receive data from the I2C bus
 void receiveReading() {
-ApplicationMonitor.SetData(3);
+
   sensorBytesReceived = 0;                        // reset data counter
   memset(sensordata, 0, sizeof(sensordata));        // clear sensordata array;
 
@@ -179,12 +220,14 @@ ApplicationMonitor.SetData(3);
 
 void initEncoders() {
 
+  positionOnEncoder = settings.timerOn;
+  positionOffEncoder = settings.timerOff;
   readEncoders();
 
 }
 
 void readEncoders() {
-ApplicationMonitor.SetData(4);
+
   unsigned char result;
 
   result = onTimeEncoder.process();
@@ -198,6 +241,7 @@ ApplicationMonitor.SetData(4);
         break;
     }
     Serial.print("On: "); Serial.println(positionOnEncoder);
+    updateSettings();
   }
   result = offTimeEncoder.process();
   if (result) {
@@ -210,6 +254,7 @@ ApplicationMonitor.SetData(4);
         break;
     }
     Serial.print("Off: "); Serial.println(positionOffEncoder);
+    updateSettings();
   }
 
 }
@@ -225,25 +270,25 @@ void initFloat() {
 
 void initNozzles() {
 
-  pinMode(NozzlesPin, OUTPUT);
-  Nozzles.setPin(NozzlesPin);
+  pinMode(nozzlesPin, OUTPUT);
+  nozzles.setPin(nozzlesPin);
   updateNozzles();
 
 }
 
 void updateNozzles() {
-ApplicationMonitor.SetData(5);
+
   long localPositionOnEncoder;
   long localPositionOffEncoder;
-  
+
   ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
     localPositionOnEncoder = positionOnEncoder;
     localPositionOffEncoder = positionOffEncoder;
   }
-  
-  Nozzles.setOnTime(localPositionOnEncoder);
-  Nozzles.setOffTime(localPositionOffEncoder);
-  Nozzles.update();
+
+  nozzles.setOnTime(localPositionOnEncoder);
+  nozzles.setOffTime(localPositionOffEncoder);
+  nozzles.update();
 
 }
 
@@ -255,7 +300,7 @@ void initSerial() {
 }
 
 void writeSerial() {
-ApplicationMonitor.SetData(6);
+
   int localFloatLevel;
   long localPositionOnEncoder;
   long localPositionOffEncoder;
@@ -297,7 +342,7 @@ void initDisplay() {
 }
 
 void writeDisplay() {
-ApplicationMonitor.SetData(7);
+  ApplicationMonitor.SetData(7);
   int localFloatLevel;
   long localPositionOnEncoder;
   long localPositionOffEncoder;
@@ -328,6 +373,5 @@ void floatPinISR() {
 
   floatLevel = digitalRead(floatPin);
   digitalWrite(mainsWaterPin, !floatLevel);
-  //turnOnBacklight();
 
 }
